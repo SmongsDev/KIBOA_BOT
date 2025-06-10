@@ -35,6 +35,67 @@ counseling_types = [
     {"label": "기타", "value": "other", "emoji": "💬"}
 ]
 
+async def disconnect_user_from_voice(user_id: int, interaction: discord.Interaction = None):
+    """특정 사용자를 음성 채널에서 연결 끊기시키는 함수"""
+    try:
+        # user_id 타입 확인 및 변환
+        if isinstance(user_id, str):
+            user_id = int(user_id)
+        
+        print(f"🔇 음성 연결 끊기 시도: {user_id}")
+        
+        # 사용자 가져오기 - 개선된 로직
+        member = None
+        
+        # 1. interaction에서 guild 가져오기 (최우선)
+        if interaction and interaction.guild:
+            member = interaction.guild.get_member(user_id)
+            print(f"🔍 Interaction guild에서 검색: {member is not None}")
+        
+        # 2. 못 찾으면 상담 채널이 있는 guild에서 검색
+        if not member and CONSULTATION_VOICE_CHANNEL_ID:
+            consultation_channel = bot.get_channel(int(CONSULTATION_VOICE_CHANNEL_ID))
+            if consultation_channel and consultation_channel.guild:
+                member = consultation_channel.guild.get_member(user_id)
+                print(f"🔍 상담 채널 guild에서 검색: {member is not None}")
+        
+        # 3. 그래도 못 찾으면 모든 guild에서 검색
+        if not member:
+            for guild in bot.guilds:
+                member = guild.get_member(user_id)
+                if member:
+                    print(f"🔍 {guild.name}에서 사용자 발견")
+                    break
+        
+        if not member:
+            print(f"⚠️ 연결 끊기: 사용자를 찾을 수 없음 {user_id}")
+            return False
+        
+        # 사용자가 음성 채널에 있는지 확인
+        if not member.voice or not member.voice.channel:
+            print(f"ℹ️ {member.display_name}님이 음성 채널에 접속하지 않았습니다.")
+            return True  # 이미 연결이 끊어진 상태이므로 성공으로 간주
+        
+        current_channel = member.voice.channel.name
+        print(f"🎤 현재 음성 채널: {current_channel}")
+        
+        # 음성 채널에서 연결 끊기 (move_to(None))
+        await member.move_to(None)
+        print(f"✅ {member.display_name}님을 음성 채널에서 연결 끊기 완료")
+        
+        # 성공 메시지 (상담 완료 시에는 너무 많은 메시지를 보내지 않도록 로그만)
+        return True
+        
+    except discord.Forbidden:
+        print(f"❌ {member.display_name if member else user_id}님을 음성 채널에서 연결 끊을 권한이 없습니다.")
+        return False
+    except discord.HTTPException as e:
+        print(f"❌ 음성 채널 연결 끊기 중 오류 발생: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ 예상치 못한 오류 발생: {e}")
+        return False
+
 async def move_user_to_consultation_channel(user_id: int, interaction: discord.Interaction = None):
     """특정 사용자를 상담용 음성 채널로 이동시키는 함수"""
     if not CONSULTATION_VOICE_CHANNEL_ID:
@@ -272,6 +333,7 @@ class AdminPanelView(discord.ui.View):
         self.add_item(RefreshQueueButton())
         self.add_item(CompleteSpecificButton())
         self.add_item(MoveUserButton())  # 사용자 이동 버튼 추가
+        self.add_item(DisconnectUserButton())  # 사용자 연결 끊기 버튼 추가
 
 class StartConsultationButton(discord.ui.Button):
     def __init__(self):
@@ -326,6 +388,9 @@ class CompleteConsultationButton(discord.ui.Button):
         completed_ticket = waiting_queue.pop(0)  # 첫 번째(진행 중인) 상담 완료
         consultation_in_progress = False  # 상담 완료 후 상태 리셋
         
+        # 상담 완료된 사용자를 음성 채널에서 연결 끊기
+        await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+        
         embed = discord.Embed(
             title="✅ 상담 완료",
             description=f"**{completed_ticket['number']}번** 상담이 완료되었습니다.",
@@ -334,6 +399,7 @@ class CompleteConsultationButton(discord.ui.Button):
         embed.add_field(name="상담 종류", value=get_counseling_type_label(completed_ticket['type']), inline=True)
         embed.add_field(name="상담자", value=completed_ticket['username'], inline=True)
         embed.add_field(name="남은 대기", value=f"{len(waiting_queue)}명", inline=True)
+        embed.add_field(name="🔇 음성 연결", value="자동으로 연결 끊기 완료", inline=False)
         embed.timestamp = datetime.now()
         
         await interaction.response.send_message(embed=embed)
@@ -369,6 +435,93 @@ class CompleteSpecificButton(discord.ui.Button):
         # 번호 선택 모달 표시
         modal = CompleteSpecificModal()
         await interaction.response.send_modal(modal)
+
+class DisconnectUserButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='음성 연결 끊기', style=discord.ButtonStyle.secondary, emoji='🔇')
+    
+    async def callback(self, interaction: discord.Interaction):
+        # 관리자 권한 체크
+        if not await check_admin_permission(interaction):
+            return
+        
+        # 사용자 연결 끊기 모달 표시
+        modal = DisconnectUserModal()
+        await interaction.response.send_modal(modal)
+
+class DisconnectUserModal(discord.ui.Modal, title='사용자 음성 연결 끊기'):
+    user_input = discord.ui.TextInput(
+        label='연결 끊을 사용자',
+        placeholder='사용자 ID 또는 멘션 또는 번호표 번호 (예: 123456789, @사용자, 5)',
+        required=True,
+        max_length=100
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        user_input = self.user_input.value.strip()
+        user_id = None
+        
+        try:
+            print(f"🔇 음성 연결 끊기 요청: '{user_input}'")
+            
+            # 멘션 형태인지 확인 (<@123456789> 또는 <@!123456789>)
+            if user_input.startswith('<@') and user_input.endswith('>'):
+                user_id_str = user_input[2:-1]
+                if user_id_str.startswith('!'):
+                    user_id_str = user_id_str[1:]
+                user_id = int(user_id_str)
+                print(f"🔍 멘션에서 추출한 ID: {user_id}")
+            
+            # 숫자인지 확인 (사용자 ID 또는 번호표 번호)
+            elif user_input.isdigit():
+                number = int(user_input)
+                print(f"🔍 숫자 입력: {number}")
+                
+                # 번호표 번호로 먼저 검색
+                ticket = next((ticket for ticket in waiting_queue if ticket['number'] == number), None)
+                if ticket:
+                    user_id = ticket['user_id']
+                    print(f"🔍 번호표 {number}번에서 찾은 사용자 ID: {user_id}")
+                else:
+                    # 번호표에 없으면 사용자 ID로 간주
+                    user_id = number
+                    print(f"🔍 사용자 ID로 간주: {user_id}")
+            
+            else:
+                await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요. (사용자 ID, 멘션, 또는 번호표 번호)", ephemeral=True)
+                return
+            
+            if user_id:
+                print(f"🔇 최종 연결 끊기 대상 ID: {user_id}")
+                await interaction.response.send_message(f"🔇 사용자를 음성 채널에서 연결 끊는 중... (ID: {user_id})", ephemeral=True)
+                success = await disconnect_user_from_voice(user_id, interaction)
+                
+                if success:
+                    # 번호표 정보가 있으면 추가 정보 표시
+                    ticket = next((ticket for ticket in waiting_queue if ticket['user_id'] == user_id), None)
+                    if ticket:
+                        embed = discord.Embed(
+                            title="🔇 음성 연결 끊기 완료",
+                            description=f"**{ticket['number']}번** {ticket['username']}님의 음성 연결을 끊었습니다.",
+                            color=0xff9900
+                        )
+                        await interaction.followup.send(embed=embed)
+                    else:
+                        embed = discord.Embed(
+                            title="🔇 음성 연결 끊기 완료",
+                            description=f"사용자 ID {user_id}의 음성 연결을 끊었습니다.",
+                            color=0xff9900
+                        )
+                        await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message("❌ 사용자를 찾을 수 없습니다.", ephemeral=True)
+                
+        except ValueError as e:
+            print(f"❌ ValueError: {e}")
+            await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요.", ephemeral=True)
+        except Exception as e:
+            print(f"❌ Exception: {e}")
+            await interaction.response.send_message(f"❌ 오류가 발생했습니다: {e}", ephemeral=True)
 
 class MoveUserButton(discord.ui.Button):
     def __init__(self):
@@ -475,6 +628,9 @@ class CompleteSpecificModal(discord.ui.Modal, title='특정 번호 완료'):
             
             completed_ticket = waiting_queue.pop(ticket_index)
             
+            # 상담 완료된 사용자를 음성 채널에서 연결 끊기
+            await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+            
             embed = discord.Embed(
                 title="✅ 특정 번호 완료",
                 description=f"**{completed_ticket['number']}번** 상담이 완료되었습니다.",
@@ -482,6 +638,7 @@ class CompleteSpecificModal(discord.ui.Modal, title='특정 번호 완료'):
             )
             embed.add_field(name="상담 종류", value=get_counseling_type_label(completed_ticket['type']), inline=True)
             embed.add_field(name="상담자", value=completed_ticket['username'], inline=True)
+            embed.add_field(name="🔇 음성 연결", value="자동으로 연결 끊기 완료", inline=False)
             embed.timestamp = datetime.now()
             
             await interaction.response.send_message(embed=embed)
@@ -689,6 +846,9 @@ async def complete_command(interaction: discord.Interaction, 번호: int):
     
     completed_ticket = waiting_queue.pop(ticket_index)
     
+    # 상담 완료된 사용자를 음성 채널에서 연결 끊기
+    await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+    
     embed = discord.Embed(
         title="✅ 상담 완료",
         color=0x00ff00
@@ -696,6 +856,7 @@ async def complete_command(interaction: discord.Interaction, 번호: int):
     embed.add_field(name="번호표", value=f"{completed_ticket['number']}번", inline=True)
     embed.add_field(name="상담 종류", value=get_counseling_type_label(completed_ticket['type']), inline=True)
     embed.add_field(name="상담자", value=completed_ticket['username'], inline=True)
+    embed.add_field(name="🔇 음성 연결", value="자동으로 연결 끊기 완료", inline=False)
     embed.timestamp = datetime.now()
     
     await interaction.response.send_message(embed=embed)
@@ -830,6 +991,44 @@ async def debug_command(interaction: discord.Interaction):
     embed.timestamp = datetime.now()
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="연결끊기", description="특정 사용자를 음성 채널에서 연결 끊습니다 (관리자 전용)")
+@app_commands.describe(
+    사용자="연결을 끊을 사용자",
+    번호="번호표 번호 (선택사항)"
+)
+async def disconnect_user_command(interaction: discord.Interaction, 사용자: discord.Member = None, 번호: int = None):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+    
+    user_id = None
+    
+    if 번호:
+        # 번호표 번호로 사용자 찾기
+        ticket = next((ticket for ticket in waiting_queue if ticket['number'] == 번호), None)
+        if not ticket:
+            await interaction.response.send_message(f"❌ {번호}번 번호표를 찾을 수 없습니다.", ephemeral=True)
+            return
+        user_id = ticket['user_id']
+    elif 사용자:
+        user_id = 사용자.id
+    else:
+        await interaction.response.send_message("❌ 사용자 또는 번호표 번호를 지정해주세요.", ephemeral=True)
+        return
+    
+    await interaction.response.send_message("🔇 사용자를 음성 채널에서 연결 끊는 중...", ephemeral=True)
+    success = await disconnect_user_from_voice(user_id, interaction)
+    
+    if success and 번호:
+        ticket = next((ticket for ticket in waiting_queue if ticket['number'] == 번호), None)
+        if ticket:
+            embed = discord.Embed(
+                title="🔇 음성 연결 끊기 완료",
+                description=f"**{ticket['number']}번** {ticket['username']}님의 음성 연결을 끊었습니다.",
+                color=0xff9900
+            )
+            await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="공지", description="특정 채널에 공지사항을 전송합니다 (관리자 전용)")
 @app_commands.describe(
