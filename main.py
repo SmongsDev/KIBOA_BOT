@@ -13,6 +13,9 @@ load_dotenv()
 # 봇 설정
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True  # 길드 관련 인텐트 추가
+intents.voice_states = True  # 음성 상태 인텐트 추가
+intents.members = True  # 멤버 인텐트 추가 (중요!)
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # 번호표 시스템 데이터
@@ -22,6 +25,7 @@ consultation_in_progress = False  # 현재 상담 진행 중 여부
 
 # 관리자 설정 (환경변수에서 가져오기)
 ADMIN_CHANNEL_ID = os.getenv('ADMIN_CHANNEL_ID')
+CONSULTATION_VOICE_CHANNEL_ID = os.getenv('CONSULTATION_VOICE_CHANNEL_ID')  # 상담용 음성 채널 ID
 
 # 상담 종류 옵션
 counseling_types = [
@@ -30,6 +34,106 @@ counseling_types = [
     {"label": "프로젝트 고민", "value": "project", "emoji": "💡"},
     {"label": "기타", "value": "other", "emoji": "💬"}
 ]
+
+async def move_user_to_consultation_channel(user_id: int, interaction: discord.Interaction = None):
+    """특정 사용자를 상담용 음성 채널로 이동시키는 함수"""
+    if not CONSULTATION_VOICE_CHANNEL_ID:
+        error_msg = "❌ 상담용 음성 채널이 설정되지 않았습니다. CONSULTATION_VOICE_CHANNEL_ID 환경변수를 확인해주세요."
+        print(error_msg)
+        if interaction:
+            await interaction.followup.send(error_msg, ephemeral=True)
+        return False
+    
+    try:
+        # user_id 타입 확인 및 변환
+        if isinstance(user_id, str):
+            user_id = int(user_id)
+        
+        print(f"🔍 사용자 검색 중: {user_id}")
+        
+        # 음성 채널 가져오기
+        consultation_channel = bot.get_channel(int(CONSULTATION_VOICE_CHANNEL_ID))
+        if not consultation_channel:
+            error_msg = f"❌ 상담용 음성 채널을 찾을 수 없습니다: {CONSULTATION_VOICE_CHANNEL_ID}"
+            print(error_msg)
+            if interaction:
+                await interaction.followup.send(error_msg, ephemeral=True)
+            return False
+        
+        # 사용자 가져오기 - 개선된 로직
+        member = None
+        
+        # 1. interaction에서 guild 가져오기 (최우선)
+        if interaction and interaction.guild:
+            member = interaction.guild.get_member(user_id)
+            print(f"🔍 Interaction guild에서 검색: {member is not None}")
+        
+        # 2. 못 찾으면 consultation_channel이 있는 guild에서 검색
+        if not member and consultation_channel.guild:
+            member = consultation_channel.guild.get_member(user_id)
+            print(f"🔍 상담 채널 guild에서 검색: {member is not None}")
+        
+        # 3. 그래도 못 찾으면 모든 guild에서 검색
+        if not member:
+            for guild in bot.guilds:
+                member = guild.get_member(user_id)
+                if member:
+                    print(f"🔍 {guild.name}에서 사용자 발견")
+                    break
+        
+        if not member:
+            # 추가 정보와 함께 오류 메시지
+            guilds_info = [f"{guild.name}({len(guild.members)}명)" for guild in bot.guilds]
+            error_msg = f"❌ 사용자를 찾을 수 없습니다: {user_id}\n서버 목록: {', '.join(guilds_info)}"
+            print(error_msg)
+            if interaction:
+                await interaction.followup.send(error_msg, ephemeral=True)
+            return False
+        
+        print(f"✅ 사용자 발견: {member.display_name} ({member.id})")
+        
+        # 사용자가 음성 채널에 있는지 확인
+        if not member.voice:
+            error_msg = f"❌ {member.display_name}님이 음성 채널에 접속하지 않았습니다."
+            print(error_msg)
+            if interaction:
+                await interaction.followup.send(error_msg, ephemeral=True)
+            return False
+        
+        # 이미 상담용 채널에 있는지 확인
+        if member.voice.channel and member.voice.channel.id == int(CONSULTATION_VOICE_CHANNEL_ID):
+            success_msg = f"✅ {member.display_name}님이 이미 상담용 음성 채널에 있습니다."
+            print(success_msg)
+            if interaction:
+                await interaction.followup.send(success_msg, ephemeral=True)
+            return True
+        
+        # 음성 채널로 이동
+        await member.move_to(consultation_channel)
+        success_msg = f"✅ {member.display_name}님을 상담용 음성 채널로 이동시켰습니다."
+        print(success_msg)
+        if interaction:
+            await interaction.followup.send(success_msg, ephemeral=True)
+        return True
+        
+    except discord.Forbidden:
+        error_msg = "❌ 사용자를 음성 채널로 이동시킬 권한이 없습니다."
+        print(error_msg)
+        if interaction:
+            await interaction.followup.send(error_msg, ephemeral=True)
+        return False
+    except discord.HTTPException as e:
+        error_msg = f"❌ 음성 채널 이동 중 오류 발생: {e}"
+        print(error_msg)
+        if interaction:
+            await interaction.followup.send(error_msg, ephemeral=True)
+        return False
+    except Exception as e:
+        error_msg = f"❌ 예상치 못한 오류 발생: {e}"
+        print(error_msg)
+        if interaction:
+            await interaction.followup.send(error_msg, ephemeral=True)
+        return False
 
 async def send_admin_channel_notification(ticket_info):
     """관리자 채널에 새로운 번호표 알림 전송"""
@@ -116,6 +220,14 @@ async def update_admin_panel():
                 value=status_text,
                 inline=False
             )
+            
+            # 음성 채널 정보 추가
+            if CONSULTATION_VOICE_CHANNEL_ID:
+                consultation_channel = bot.get_channel(int(CONSULTATION_VOICE_CHANNEL_ID))
+                if consultation_channel:
+                    voice_info = f"🎤 상담 채널: {consultation_channel.mention}"
+                    embed.add_field(name="🔊 음성 설정", value=voice_info, inline=False)
+            
             embed.timestamp = datetime.now()
             embed.set_footer(text="버튼을 클릭하여 대기열을 관리하세요")
         else:
@@ -129,6 +241,14 @@ async def update_admin_panel():
                 value=f"총 대기: **0명**",
                 inline=False
             )
+            
+            # 음성 채널 정보 추가
+            if CONSULTATION_VOICE_CHANNEL_ID:
+                consultation_channel = bot.get_channel(int(CONSULTATION_VOICE_CHANNEL_ID))
+                if consultation_channel:
+                    voice_info = f"🎤 상담 채널: {consultation_channel.mention}"
+                    embed.add_field(name="🔊 음성 설정", value=voice_info, inline=False)
+            
             embed.timestamp = datetime.now()
         
         view = AdminPanelView(consultation_in_progress)
@@ -151,6 +271,7 @@ class AdminPanelView(discord.ui.View):
         # 항상 표시되는 버튼들
         self.add_item(RefreshQueueButton())
         self.add_item(CompleteSpecificButton())
+        self.add_item(MoveUserButton())  # 사용자 이동 버튼 추가
 
 class StartConsultationButton(discord.ui.Button):
     def __init__(self):
@@ -181,6 +302,10 @@ class StartConsultationButton(discord.ui.Button):
         embed.timestamp = datetime.now()
         
         await interaction.response.send_message(embed=embed)
+        
+        # 상담자를 음성 채널로 이동 시도
+        await move_user_to_consultation_channel(next_ticket['user_id'], interaction)
+        
         await update_admin_panel()
 
 class CompleteConsultationButton(discord.ui.Button):
@@ -244,6 +369,86 @@ class CompleteSpecificButton(discord.ui.Button):
         # 번호 선택 모달 표시
         modal = CompleteSpecificModal()
         await interaction.response.send_modal(modal)
+
+class MoveUserButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='사용자 이동', style=discord.ButtonStyle.secondary, emoji='🔊')
+    
+    async def callback(self, interaction: discord.Interaction):
+        # 관리자 권한 체크
+        if not await check_admin_permission(interaction):
+            return
+        
+        # 사용자 이동 모달 표시
+        modal = MoveUserModal()
+        await interaction.response.send_modal(modal)
+
+class MoveUserModal(discord.ui.Modal, title='사용자 음성 채널 이동'):
+    user_input = discord.ui.TextInput(
+        label='이동할 사용자',
+        placeholder='사용자 ID 또는 멘션 또는 번호표 번호 (예: 123456789, @사용자, 5)',
+        required=True,
+        max_length=100
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        user_input = self.user_input.value.strip()
+        user_id = None
+        
+        try:
+            print(f"🔍 사용자 입력 처리: '{user_input}'")
+            
+            # 멘션 형태인지 확인 (<@123456789> 또는 <@!123456789>)
+            if user_input.startswith('<@') and user_input.endswith('>'):
+                user_id_str = user_input[2:-1]
+                if user_id_str.startswith('!'):
+                    user_id_str = user_id_str[1:]
+                user_id = int(user_id_str)
+                print(f"🔍 멘션에서 추출한 ID: {user_id}")
+            
+            # 숫자인지 확인 (사용자 ID 또는 번호표 번호)
+            elif user_input.isdigit():
+                number = int(user_input)
+                print(f"🔍 숫자 입력: {number}")
+                
+                # 번호표 번호로 먼저 검색
+                ticket = next((ticket for ticket in waiting_queue if ticket['number'] == number), None)
+                if ticket:
+                    user_id = ticket['user_id']
+                    print(f"🔍 번호표 {number}번에서 찾은 사용자 ID: {user_id}")
+                else:
+                    # 번호표에 없으면 사용자 ID로 간주
+                    user_id = number
+                    print(f"🔍 사용자 ID로 간주: {user_id}")
+            
+            else:
+                await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요. (사용자 ID, 멘션, 또는 번호표 번호)", ephemeral=True)
+                return
+            
+            if user_id:
+                print(f"🔍 최종 사용자 ID: {user_id}")
+                await interaction.response.send_message(f"🔊 사용자를 음성 채널로 이동 중... (ID: {user_id})", ephemeral=True)
+                success = await move_user_to_consultation_channel(user_id, interaction)
+                
+                if success:
+                    # 번호표 정보가 있으면 추가 정보 표시
+                    ticket = next((ticket for ticket in waiting_queue if ticket['user_id'] == user_id), None)
+                    if ticket:
+                        embed = discord.Embed(
+                            title="🔊 사용자 이동 완료",
+                            description=f"**{ticket['number']}번** {ticket['username']}님을 상담용 음성 채널로 이동했습니다.",
+                            color=0x00ff00
+                        )
+                        await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message("❌ 사용자를 찾을 수 없습니다.", ephemeral=True)
+                
+        except ValueError as e:
+            print(f"❌ ValueError: {e}")
+            await interaction.response.send_message("❌ 올바른 형식으로 입력해주세요.", ephemeral=True)
+        except Exception as e:
+            print(f"❌ Exception: {e}")
+            await interaction.response.send_message(f"❌ 오류가 발생했습니다: {e}", ephemeral=True)
 
 class CompleteSpecificModal(discord.ui.Modal, title='특정 번호 완료'):
     ticket_number = discord.ui.TextInput(
@@ -375,16 +580,39 @@ def get_counseling_type_label(type_value):
 @bot.event
 async def on_ready():
     print(f'✅ {bot.user} 봇이 준비되었습니다!')
+    print(f'🤖 봇 ID: {bot.user.id}')
+    print(f'🏠 참여 서버 수: {len(bot.guilds)}')
+    
+    # 참여 서버 목록 출력
+    for guild in bot.guilds:
+        print(f'   📍 {guild.name} (ID: {guild.id}, 멤버: {guild.member_count}명)')
     
     # 관리자 설정 확인
     if ADMIN_CHANNEL_ID:
         admin_channel = bot.get_channel(int(ADMIN_CHANNEL_ID))
         if admin_channel:
-            print(f'🎛️ 관리자 채널: {admin_channel.name}')
+            print(f'🎛️ 관리자 채널: {admin_channel.name} (서버: {admin_channel.guild.name})')
         else:
             print(f'⚠️ 관리자 채널을 찾을 수 없습니다: {ADMIN_CHANNEL_ID}')
     else:
         print('⚠️ ADMIN_CHANNEL_ID 환경변수가 설정되지 않았습니다.')
+    
+    # 상담용 음성 채널 설정 확인
+    if CONSULTATION_VOICE_CHANNEL_ID:
+        consultation_channel = bot.get_channel(int(CONSULTATION_VOICE_CHANNEL_ID))
+        if consultation_channel:
+            print(f'🎤 상담용 음성 채널: {consultation_channel.name} (서버: {consultation_channel.guild.name})')
+        else:
+            print(f'⚠️ 상담용 음성 채널을 찾을 수 없습니다: {CONSULTATION_VOICE_CHANNEL_ID}')
+    else:
+        print('⚠️ CONSULTATION_VOICE_CHANNEL_ID 환경변수가 설정되지 않았습니다.')
+    
+    # 인텐트 확인
+    print(f'🔧 활성화된 인텐트:')
+    print(f'   • members: {bot.intents.members}')
+    print(f'   • guilds: {bot.intents.guilds}')
+    print(f'   • voice_states: {bot.intents.voice_states}')
+    print(f'   • message_content: {bot.intents.message_content}')
     
     try:
         synced = await bot.tree.sync()
@@ -403,7 +631,7 @@ async def ticket_command(interaction: discord.Interaction):
     )
     embed.add_field(
         name="📋 이용 안내",
-        value="• 번호표 발급 후 상담 종류를 선택해주세요\n• 순서대로 상담이 진행됩니다\n• 대기 시간은 상황에 따라 달라질 수 있습니다",
+        value="• 번호표 발급 후 상담 종류를 선택해주세요\n• 순서대로 상담이 진행됩니다\n• 대기 시간은 상황에 따라 달라질 수 있습니다\n• 상담 시작 시 자동으로 음성 채널로 이동됩니다",
         inline=False
     )
     embed.timestamp = datetime.now()
@@ -505,6 +733,103 @@ async def admin_panel_command(interaction: discord.Interaction):
     
     await interaction.response.send_message("🎛️ 관리자 패널을 생성했습니다.", ephemeral=True)
     await update_admin_panel()
+
+@bot.tree.command(name="이동", description="특정 사용자를 상담용 음성 채널로 이동시킵니다 (관리자 전용)")
+@app_commands.describe(
+    사용자="이동시킬 사용자",
+    번호="번호표 번호 (선택사항)"
+)
+async def move_user_command(interaction: discord.Interaction, 사용자: discord.Member = None, 번호: int = None):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+    
+    user_id = None
+    
+    if 번호:
+        # 번호표 번호로 사용자 찾기
+        ticket = next((ticket for ticket in waiting_queue if ticket['number'] == 번호), None)
+        if not ticket:
+            await interaction.response.send_message(f"❌ {번호}번 번호표를 찾을 수 없습니다.", ephemeral=True)
+            return
+        user_id = ticket['user_id']
+    elif 사용자:
+        user_id = 사용자.id
+    else:
+        await interaction.response.send_message("❌ 사용자 또는 번호표 번호를 지정해주세요.", ephemeral=True)
+        return
+    
+    await interaction.response.send_message("🔊 사용자를 음성 채널로 이동 중...", ephemeral=True)
+    success = await move_user_to_consultation_channel(user_id, interaction)
+    
+    if success and 번호:
+        ticket = next((ticket for ticket in waiting_queue if ticket['number'] == 번호), None)
+        if ticket:
+            embed = discord.Embed(
+                title="🔊 사용자 이동 완료",
+                description=f"**{ticket['number']}번** {ticket['username']}님을 상담용 음성 채널로 이동했습니다.",
+                color=0x00ff00
+            )
+            await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="디버그", description="대기열 사용자 정보를 확인합니다 (관리자 전용)")
+async def debug_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+    
+    if not waiting_queue:
+        await interaction.response.send_message("❌ 대기열이 비어있습니다.", ephemeral=True)
+        return
+    
+    debug_info = []
+    debug_info.append(f"**🔍 디버그 정보**")
+    debug_info.append(f"총 대기: {len(waiting_queue)}명")
+    debug_info.append(f"봇이 참여한 서버: {len(bot.guilds)}개")
+    debug_info.append("")
+    
+    for i, ticket in enumerate(waiting_queue[:5]):  # 최대 5개만 표시
+        user_id = ticket['user_id']
+        username = ticket['username']
+        
+        # 사용자 검색 시도
+        member = None
+        found_guild = None
+        
+        # 현재 길드에서 검색
+        member = interaction.guild.get_member(user_id)
+        if member:
+            found_guild = interaction.guild.name
+        else:
+            # 다른 길드에서 검색
+            for guild in bot.guilds:
+                member = guild.get_member(user_id)
+                if member:
+                    found_guild = guild.name
+                    break
+        
+        status = "✅ 발견됨" if member else "❌ 없음"
+        voice_status = "🎤 음성채널 접속" if member and member.voice else "🔇 음성채널 미접속"
+        
+        debug_info.append(f"**{ticket['number']}번** {username}")
+        debug_info.append(f"├ ID: `{user_id}`")
+        debug_info.append(f"├ 상태: {status}")
+        if found_guild:
+            debug_info.append(f"├ 서버: {found_guild}")
+        if member:
+            debug_info.append(f"└ 음성: {voice_status}")
+        else:
+            debug_info.append(f"└ 음성: 확인 불가")
+        debug_info.append("")
+    
+    embed = discord.Embed(
+        title="🛠️ 대기열 디버그 정보",
+        description="\n".join(debug_info),
+        color=0xff9900
+    )
+    embed.timestamp = datetime.now()
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="공지", description="특정 채널에 공지사항을 전송합니다 (관리자 전용)")
 @app_commands.describe(
