@@ -621,6 +621,10 @@ class StartConsultationButton(discord.ui.Button):
         embed.timestamp = datetime.now()
         
         await interaction.response.send_message(embed=embed)
+        
+        await move_user_to_consultation_channel(next_ticket['user_id'], interaction)
+        
+        await update_admin_panel()
 
 class CompleteConsultationButton(discord.ui.Button):
     def __init__(self):
