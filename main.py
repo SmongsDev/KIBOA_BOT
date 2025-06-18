@@ -296,6 +296,79 @@ print("📊 게임 기록 시스템 초기화 중...")
 game_records = load_game_records()
 print(f"✅ 기존 기록 로드 완료: 테트리스 {len(game_records['tetris'])}개, 가위바위보 {len(game_records['rps'])}개")
 
+
+# ========================================
+# 설문 시스템 데이터 및 설정
+# ========================================
+
+# 환경변수에 추가할 설문 링크들
+SURVEY_LINKS = {
+    "career": os.getenv('CAREER_SURVEY_LINK'),
+    "study": os.getenv('STUDY_SURVEY_LINK'), 
+    "project": os.getenv('PROJECT_SURVEY_LINK'),
+    "other": os.getenv('OTHER_SURVEY_LINK')
+}
+
+# 설문 응답 추적 파일
+SURVEY_RECORDS_FILE = "survey_records.json"
+
+def load_survey_records():
+    """설문 기록을 파일에서 로드"""
+    try:
+        if os.path.exists(SURVEY_RECORDS_FILE):
+            with open(SURVEY_RECORDS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        else:
+            return {
+                "surveys_sent": [],
+                "total_sent": 0,
+                "completion_tracked": []
+            }
+    except Exception as e:
+        print(f"❌ 설문 기록 로드 실패: {e}")
+        return {
+            "surveys_sent": [],
+            "total_sent": 0, 
+            "completion_tracked": []
+        }
+
+def save_survey_records(records):
+    """설문 기록을 파일에 저장"""
+    try:
+        with open(SURVEY_RECORDS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"❌ 설문 기록 저장 실패: {e}")
+        return False
+
+def add_survey_record(user_id, username, consultation_type, ticket_number, survey_link):
+    """설문 전송 기록 추가"""
+    try:
+        records = load_survey_records()
+        
+        new_record = {
+            "user_id": user_id,
+            "username": username,
+            "consultation_type": consultation_type,
+            "ticket_number": ticket_number,
+            "survey_link": survey_link,
+            "sent_timestamp": datetime.now().isoformat(),
+            "date": date.today().isoformat(),
+            "dm_success": True
+        }
+        
+        records["surveys_sent"].append(new_record)
+        records["total_sent"] += 1
+        
+        if save_survey_records(records):
+            print(f"✅ 설문 전송 기록 저장: {username} - {consultation_type}")
+            return True
+        return False
+    except Exception as e:
+        print(f"❌ 설문 기록 추가 실패: {e}")
+        return False
+
 # ========================================
 # 음성 채널 관리 함수들
 # ========================================
@@ -613,6 +686,129 @@ async def check_admin_permission(interaction: discord.Interaction):
     return True
 
 # ========================================
+# DM 전송 및 설문 관련 함수들
+# ========================================
+
+async def send_survey_dm(user_id: int, username: str, consultation_type: str, ticket_number: int):
+    """상담 완료 후 설문 링크를 DM으로 전송"""
+    try:
+        user = bot.get_user(user_id)
+        if not user:
+            user = await bot.fetch_user(user_id)
+        
+        if not user:
+            print(f"❌ 사용자를 찾을 수 없음: {user_id}")
+            return False
+        
+        # 상담 타입에 맞는 설문 링크 가져오기
+        survey_link = SURVEY_LINKS.get(consultation_type, SURVEY_LINKS.get("other"))
+        
+        if not survey_link:
+            print(f"⚠️ 유효하지 않은 설문 링크: {consultation_type}")
+            return False
+        
+        # DM 임베드 생성
+        embed = discord.Embed(
+            title="📝 상담 만족도 설문",
+            description=f"안녕하세요, {username}님!\n\n방금 전 **{get_counseling_type_label(consultation_type)}**이 완료되었습니다.",
+            color=0x00ff88
+        )
+        
+        embed.add_field(
+            name="🎯 설문 참여 요청",
+            value=(
+                "더 나은 상담 서비스 제공을 위해\n"
+                "간단한 만족도 설문에 참여해 주세요!\n\n"
+                "⏱️ **소요시간**: 약 2-3분\n"
+                "📊 **내용**: 상담 만족도 및 개선사항"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🔗 설문 링크",
+            value=f"[📝 설문 참여하기]({survey_link})",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📋 상담 정보",
+            value=(
+                f"• **번호표**: {ticket_number}번\n"
+                f"• **상담 종류**: {get_counseling_type_label(consultation_type)}\n"
+                f"• **완료 시간**: <t:{int(datetime.now().timestamp())}:F>"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="설문 참여는 선택사항이며, 익명으로 처리됩니다.")
+        embed.timestamp = datetime.now()
+        
+        # DM 전송 시도
+        try:
+            await user.send(embed=embed)
+            print(f"✅ 설문 DM 전송 성공: {username} ({consultation_type})")
+            
+            # 설문 전송 기록 저장
+            add_survey_record(user_id, username, consultation_type, ticket_number, survey_link)
+            
+            return True
+            
+        except discord.Forbidden:
+            print(f"❌ DM 전송 실패 (차단됨): {username}")
+            return False
+        except discord.HTTPException as e:
+            print(f"❌ DM 전송 실패 (HTTP 오류): {username} - {e}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ 설문 DM 전송 중 오류: {e}")
+        return False
+
+async def send_survey_notification_to_admin(username: str, consultation_type: str, ticket_number: int, dm_success: bool):
+    """관리자 채널에 설문 전송 결과 알림"""
+    if not ADMIN_CHANNEL_ID:
+        return
+    
+    try:
+        admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+        if not admin_channel:
+            return
+        
+        if dm_success:
+            embed = discord.Embed(
+                title="📝 설문 전송 완료",
+                description=f"**{ticket_number}번** {username}님에게 설문 링크를 전송했습니다.",
+                color=0x00ff88
+            )
+        else:
+            embed = discord.Embed(
+                title="⚠️ 설문 전송 실패",
+                description=f"**{ticket_number}번** {username}님에게 DM 전송에 실패했습니다.",
+                color=0xffaa00
+            )
+        
+        embed.add_field(
+            name="상담 정보",
+            value=f"종류: {get_counseling_type_label(consultation_type)}",
+            inline=True
+        )
+        
+        if not dm_success:
+            embed.add_field(
+                name="원인",
+                value="DM 차단 또는 권한 부족",
+                inline=True
+            )
+        
+        embed.timestamp = datetime.now()
+        
+        await admin_channel.send(embed=embed)
+        
+    except Exception as e:
+        print(f"❌ 관리자 설문 알림 전송 실패: {e}")
+
+# ========================================
 # Discord UI 클래스들
 # ========================================
 
@@ -681,6 +877,22 @@ class CompleteConsultationButton(discord.ui.Button):
         consultation_in_progress = False
         
         await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+        
+        # 설문 DM 전송
+        dm_success = await send_survey_dm(
+            completed_ticket['user_id'], 
+            completed_ticket['username'], 
+            completed_ticket['type'], 
+            completed_ticket['number']
+        )
+        
+        # 관리자에게 설문 전송 결과 알림
+        await send_survey_notification_to_admin(
+            completed_ticket['username'],
+            completed_ticket['type'],
+            completed_ticket['number'],
+            dm_success
+        )
         
         embed = discord.Embed(
             title="✅ 상담 완료",
@@ -771,6 +983,22 @@ class CompleteSpecificModal(discord.ui.Modal, title='특정 번호 완료'):
             completed_ticket = waiting_queue.pop(ticket_index)
             
             await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+            
+            # 설문 DM 전송
+            dm_success = await send_survey_dm(
+                completed_ticket['user_id'], 
+                completed_ticket['username'], 
+                completed_ticket['type'], 
+                completed_ticket['number']
+            )
+            
+            # 관리자에게 설문 전송 결과 알림
+            await send_survey_notification_to_admin(
+                completed_ticket['username'],
+                completed_ticket['type'],
+                completed_ticket['number'],
+                dm_success
+            )
             
             embed = discord.Embed(
                 title="✅ 특정 번호 완료",
@@ -1233,6 +1461,144 @@ async def queue_command(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
+# ========================================
+# 설문 관리 슬래시 커맨드들
+# ========================================
+
+@bot.tree.command(name="설문통계", description="설문 전송 및 응답 통계를 확인합니다 (관리자 전용)")
+async def survey_statistics_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+    
+    try:
+        records = load_survey_records()
+        surveys_sent = records.get("surveys_sent", [])
+        total_sent = records.get("total_sent", 0)
+        
+        if not surveys_sent:
+            embed = discord.Embed(
+                title="📊 설문 통계",
+                description="아직 전송된 설문이 없습니다.",
+                color=0x808080
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # 오늘 전송된 설문
+        today = date.today().isoformat()
+        today_surveys = [s for s in surveys_sent if s.get("date") == today]
+        
+        # 상담 타입별 통계
+        type_stats = {}
+        for survey in surveys_sent:
+            consultation_type = survey.get("consultation_type", "unknown")
+            if consultation_type not in type_stats:
+                type_stats[consultation_type] = 0
+            type_stats[consultation_type] += 1
+        
+        embed = discord.Embed(
+            title="📊 설문 전송 통계",
+            color=0x00ff88
+        )
+        
+        embed.add_field(
+            name="📈 전체 통계",
+            value=f"총 전송: **{total_sent}개**\n오늘 전송: **{len(today_surveys)}개**",
+            inline=False
+        )
+        
+        # 상담 타입별 통계
+        if type_stats:
+            type_text = []
+            for consultation_type, count in type_stats.items():
+                type_label = get_counseling_type_label(consultation_type)
+                type_text.append(f"{type_label}: **{count}개**")
+            
+            embed.add_field(
+                name="📋 상담 타입별 통계",
+                value="\n".join(type_text),
+                inline=False
+            )
+        
+        # 최근 전송 내역 (최대 5개)
+        recent_surveys = sorted(surveys_sent, key=lambda x: x.get("sent_timestamp", ""), reverse=True)[:5]
+        if recent_surveys:
+            recent_text = []
+            for survey in recent_surveys:
+                timestamp = survey.get("sent_timestamp", "")
+                if timestamp:
+                    try:
+                        dt = datetime.fromisoformat(timestamp)
+                        time_str = f"<t:{int(dt.timestamp())}:R>"
+                    except:
+                        time_str = "시간 불명"
+                else:
+                    time_str = "시간 불명"
+                
+                recent_text.append(
+                    f"**{survey.get('ticket_number', '?')}번** {survey.get('username', '?')} "
+                    f"({get_counseling_type_label(survey.get('consultation_type', 'unknown'))}) {time_str}"
+                )
+            
+            embed.add_field(
+                name="🕒 최근 전송 내역",
+                value="\n".join(recent_text),
+                inline=False
+            )
+        
+        embed.timestamp = datetime.now()
+        embed.set_footer(text="설문 링크 관리는 /설문설정 명령어를 사용하세요")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        print(f"❌ 설문 통계 조회 실패: {e}")
+        await interaction.response.send_message("❌ 설문 통계를 불러오는 중 오류가 발생했습니다.", ephemeral=True)
+
+@bot.tree.command(name="설문설정", description="설문 링크 설정 상태를 확인합니다 (관리자 전용)")
+async def survey_settings_command(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 사용할 수 있는 명령어입니다.", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="⚙️ 설문 링크 설정 상태",
+        color=0x0099ff
+    )
+    
+    for consultation_type, link in SURVEY_LINKS.items():
+        type_label = get_counseling_type_label(consultation_type)
+        
+        if link and not link.startswith('https://forms.gle/example'):
+            status = f"✅ 설정됨\n`{link[:50]}...`" if len(link) > 50 else f"✅ 설정됨\n`{link}`"
+        else:
+            status = "❌ 미설정 또는 예시 링크"
+        
+        embed.add_field(
+            name=type_label,
+            value=status,
+            inline=False
+        )
+    
+    embed.add_field(
+        name="📝 설정 방법",
+        value=(
+            "`.env` 파일에 다음 변수들을 추가하세요:\n"
+            "```\n"
+            "CAREER_SURVEY_LINK=https://forms.gle/your_career_form\n"
+            "STUDY_SURVEY_LINK=https://forms.gle/your_study_form\n"
+            "PROJECT_SURVEY_LINK=https://forms.gle/your_project_form\n"
+            "OTHER_SURVEY_LINK=https://forms.gle/your_other_form\n"
+            "```"
+        ),
+        inline=False
+    )
+    
+    embed.timestamp = datetime.now()
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="완료", description="상담을 완료처리 합니다")
 @app_commands.describe(번호="완료할 번호표 번호")
 async def complete_command(interaction: discord.Interaction, 번호: int):
@@ -1250,6 +1616,22 @@ async def complete_command(interaction: discord.Interaction, 번호: int):
     completed_ticket = waiting_queue.pop(ticket_index)
     
     await disconnect_user_from_voice(completed_ticket['user_id'], interaction)
+    
+    # 설문 DM 전송
+    dm_success = await send_survey_dm(
+        completed_ticket['user_id'], 
+        completed_ticket['username'], 
+        completed_ticket['type'], 
+        completed_ticket['number']
+    )
+    
+    # 관리자에게 설문 전송 결과 알림
+    await send_survey_notification_to_admin(
+        completed_ticket['username'],
+        completed_ticket['type'],
+        completed_ticket['number'],
+        dm_success
+    )
     
     embed = discord.Embed(
         title="✅ 상담 완료",

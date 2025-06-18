@@ -1,0 +1,16 @@
+{
+  "surveys_sent": [
+    {
+      "user_id": 400661573754159114,
+      "username": "신성민",
+      "consultation_type": "career",
+      "ticket_number": 1,
+      "survey_link": "https://docs.google.com/forms/d/e/1FAIpQLSdyn21-cdi1JsvrP01LchcyAQdgAWJn2giBZHs1jtrEJR3EDg/viewform?usp=dialog",
+      "sent_timestamp": "2025-06-18T23:19:32.305891",
+      "date": "2025-06-18",
+      "dm_success": true
+    }
+  ],
+  "total_sent": 2,
+  "completion_tracked": []
+}
