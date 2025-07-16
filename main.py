@@ -1337,6 +1337,7 @@ async def on_ready():
     print("\n🔧 환경변수 체크:")
     print(f"   • DISCORD_TOKEN: {'✅ 설정됨' if DISCORD_TOKEN else '❌ 없음'}")
     print(f"   • ADMIN_CHANNEL_ID: {'✅ 설정됨' if ADMIN_CHANNEL_ID else '⚠️ 설정되지 않음'}")
+    print(f"   • NOTIFICATION_CHANNEL_ID: {f'✅ 설정됨: ID-{NOTIFICATION_CHANNEL_ID}' if NOTIFICATION_CHANNEL_ID else '⚠️ 설정되지 않음'}")
     
     # 상담 채널별 체크
     for consultation_type, channel_id in CONSULTATION_VOICE_CHANNEL_IDS.items():
@@ -1827,9 +1828,11 @@ async def announcement_command(interaction: discord.Interaction, 메시지: str)
     
     try:
         notification = bot.get_channel(NOTIFICATION_CHANNEL_ID)
+        # \n을 실제 개행으로 변환
+        formatted_message = 메시지.replace('\\n', '\n')
         embed = discord.Embed(
             title="📢 공지사항",
-            description=메시지,
+            description=formatted_message,
             color=0xff6b35
         )
         embed.set_footer(text=f"관리자: {interaction.user.display_name}")
